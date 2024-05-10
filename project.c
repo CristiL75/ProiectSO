@@ -33,7 +33,7 @@ void parsare_metadate(char *cale, struct Metadata *metadate) {
 }
 
 void creaza_snapshot(char *dir_cale, char *snapshot_file, char *directorSpatiuIzolat, char *argv[]) {
-    FILE *fptr;
+    int fptr;
     struct Metadata metadate;
     DIR *dir;
     struct dirent *ent;
@@ -43,14 +43,14 @@ void creaza_snapshot(char *dir_cale, char *snapshot_file, char *directorSpatiuIz
         sprintf(snapshot_vechi, "%s/Snapshot_vechi.txt", argv[2]);
         sprintf(snapshot_nou, "%s/Snapshot_nou.txt", argv[2]);
 
-        fptr = fopen(snapshot_nou, "w");
+        fptr = open(snapshot_nou, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 
         while ((ent = readdir(dir)) != NULL) {
             if (strcmp(ent->d_name, ".") != 0 && strcmp(ent->d_name, "..") != 0) {
                 char path[512];
                 sprintf(path, "%s/%s", dir_cale, ent->d_name);
                 parsare_metadate(path, &metadate);
-                fprintf(fptr, "%s\t%s\t%c\t%ld\t%s", metadate.nume, metadate.cale, metadate.tip, metadate.marime, ctime(&metadate.ultimaModificare));
+                dprintf(fptr, "%s\t%s\t%c\t%ld\t%s", metadate.nume, metadate.cale, metadate.tip, metadate.marime, ctime(&metadate.ultimaModificare));
 
                 // Recursivitate pentru subdirectoare
                 if (metadate.tip == 'D') {
@@ -71,7 +71,7 @@ void creaza_snapshot(char *dir_cale, char *snapshot_file, char *directorSpatiuIz
                 }
             }
         }
-        fclose(fptr);
+        close(fptr);
         closedir(dir);
     } else {
         perror("Eroare la deschiderea directorului");
@@ -81,8 +81,8 @@ void creaza_snapshot(char *dir_cale, char *snapshot_file, char *directorSpatiuIz
 
 // Funcție pentru a analiza sintactic un fișier
 void analizeaza_fisier(char *file_path, int *pipe_fd) {
-    FILE *fisier = fopen(file_path, "r");
-    if (fisier == NULL) {
+    int fisier = open(file_path, O_RDONLY);
+    if (fisier == -1) {
         perror("Eroare la deschiderea fișierului");
         exit(EXIT_FAILURE);
     }
@@ -93,7 +93,7 @@ void analizeaza_fisier(char *file_path, int *pipe_fd) {
     int cuvant_inceput = 0;
 
     // Analiza sintactică a fișierului
-    while ((ch = fgetc(fisier)) != EOF) {
+    while (read(fisier, &ch, 1) != 0) {
         caractere++;
 
         // Contorizează cuvintele
@@ -122,8 +122,8 @@ void analizeaza_fisier(char *file_path, int *pipe_fd) {
         // Verifică cuvinte cheie
         char *cuvinte_cheie[] = {"corupt", "periculos", "risc", "atac", "malware", "malicios"};
         char buffer[1024];
-        fseek(fisier, 0, SEEK_SET);
-        while (fgets(buffer, sizeof(buffer), fisier)) {
+        lseek(fisier, 0, SEEK_SET);
+        while (read(fisier, buffer, sizeof(buffer))) {
             for (int i = 0; i < sizeof(cuvinte_cheie) / sizeof(cuvinte_cheie[0]); i++) {
                 if (strstr(buffer, cuvinte_cheie[i]) != NULL) {
                     // Scrie "CORUPT" prin pipe dacă fișierul este considerat corupt
@@ -131,7 +131,7 @@ void analizeaza_fisier(char *file_path, int *pipe_fd) {
                         perror("Eroare la scrierea în pipe");
                         exit(EXIT_FAILURE);
                     }
-                    fclose(fisier);
+                    close(fisier);
                     return;
                 }
             }
@@ -141,7 +141,7 @@ void analizeaza_fisier(char *file_path, int *pipe_fd) {
                 perror("Eroare la scrierea în pipe");
                 exit(EXIT_FAILURE);
             }
-            fclose(fisier);
+            close(fisier);
             return;
         }
     }
@@ -151,7 +151,7 @@ void analizeaza_fisier(char *file_path, int *pipe_fd) {
         exit(EXIT_FAILURE);
     }
 
-    fclose(fisier);
+    close(fisier);
 }
 
 void izoleaza_fisier(char *cale_fisier, char *directorSpatiuIzolat) {
@@ -169,12 +169,12 @@ void izoleaza_fisier(char *cale_fisier, char *directorSpatiuIzolat) {
 void compara_snapshoturi(char *snapshot_vechi_fisier, char *snapshot_nou_fisier, char *directorSpatiuIzolat, char *argv[]) {
     struct Metadata metadate_vechi, metadate_nou;
     char linie_veche[1024], linie_noua[1024];
-    FILE *f_vechi, *f_nou;
+    int f_vechi, f_nou;
 
-    f_vechi = fopen(snapshot_vechi_fisier, "r");
-    f_nou = fopen(snapshot_nou_fisier, "r");
+    f_vechi = open(snapshot_vechi_fisier, O_RDONLY);
+    f_nou = open(snapshot_nou_fisier, O_RDONLY);
 
-    if (f_vechi == NULL || f_nou == NULL) {
+    if (f_vechi == -1 || f_nou == -1) {
         perror("Eroare la deschiderea fișierelor de snapshot");
         exit(EXIT_FAILURE);
     }
@@ -182,7 +182,7 @@ void compara_snapshoturi(char *snapshot_vechi_fisier, char *snapshot_nou_fisier,
     printf("Modificările:\n");
 
     // Parcurgere snapshot-ul nou
-    while (fgets(linie_noua, sizeof(linie_noua), f_nou) != NULL) {
+    while (read(f_nou, linie_noua, sizeof(linie_noua)) != 0) {
         int gasit = 0;
         char *token_nou = strtok(linie_noua, "\t");
         strcpy(metadate_nou.nume, token_nou);
@@ -196,8 +196,8 @@ void compara_snapshoturi(char *snapshot_vechi_fisier, char *snapshot_nou_fisier,
         metadate_nou.ultimaModificare = mktime(gmtime((const time_t *)&token_nou));
 
         // Parcurgere snapshot-ul vechi pentru a compara
-        rewind(f_vechi);
-        while (fgets(linie_veche, sizeof(linie_veche), f_vechi) != NULL) {
+        lseek(f_vechi, 0, SEEK_SET);
+        while (read(f_vechi, linie_veche, sizeof(linie_veche)) != 0) {
             char *token_vechi = strtok(linie_veche, "\t");
             strcpy(metadate_vechi.nume, token_vechi);
 
@@ -219,15 +219,15 @@ void compara_snapshoturi(char *snapshot_vechi_fisier, char *snapshot_nou_fisier,
     }
 
     // Parcurgere snapshot-ul vechi pentru a identifica fișierele/directoarele șterse
-    rewind(f_vechi);
-    while (fgets(linie_veche, sizeof(linie_veche), f_vechi) != NULL) {
+    lseek(f_vechi, 0, SEEK_SET);
+    while (read(f_vechi, linie_veche, sizeof(linie_veche)) != 0) {
         int gasit = 0;
         char *token_vechi = strtok(linie_veche, "\t");
         strcpy(metadate_vechi.nume, token_vechi);
 
         // Parcurgere snapshot-ul nou pentru a compara
-        rewind(f_nou);
-        while (fgets(linie_noua, sizeof(linie_noua), f_nou) != NULL) {
+        lseek(f_nou, 0, SEEK_SET);
+        while (read(f_nou, linie_noua, sizeof(linie_noua)) != 0) {
             char *token_nou = strtok(linie_noua, "\t");
             strcpy(metadate_nou.nume, token_nou);
 
@@ -246,8 +246,8 @@ void compara_snapshoturi(char *snapshot_vechi_fisier, char *snapshot_nou_fisier,
         }
     }
 
-    fclose(f_vechi);
-    fclose(f_nou);
+    close(f_vechi);
+    close(f_nou);
 }
 
 int main(int argc, char *argv[]) {
