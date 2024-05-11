@@ -23,7 +23,7 @@ void izoleazaFisier(char *caleFisier, char *directorCarantina) {
         return;
     }
 
-    printf("Izolarea fișierului: %s\n", caleFisier);
+    printf("Analizarea fișierului: %s\n", caleFisier);
 
     int pipeFd[2];
     pid_t pid;
@@ -72,6 +72,13 @@ void izoleazaFisier(char *caleFisier, char *directorCarantina) {
             printf("Fișierul \"%s\" a fost izolat cu succes în \"%s\".\n", caleFisier, directorCarantina);
         } else if (strcmp(buffer, "SIGUR\n") == 0) {
             printf("Fișier sigur: %s\n", caleFisier);
+        } else {
+            printf("Eroare la determinarea siguranței fișierului: %s\n", buffer);
+        }
+
+        if (strcmp(buffer, "SIGUR\n") != 0) {
+            close(pipeFd[0]);
+            return; // Nu izola fișierul dacă este sigur
         }
 
         close(pipeFd[0]);
@@ -91,6 +98,54 @@ void parseazaMetadate(char *cale, struct Metadate *metadate) {
     metadate->ultimaModificare = fileStat.st_mtime;
 }
 
+void comparaSnapshoturi(char *fisierSnapshotVechi, char *fisierSnapshotNou, char *directorCarantina) {
+    struct Metadate metadateVechi, metadateNou;
+    char linieVechi[1024], linieNoua[1024];
+    int snapshotVechi, snapshotNou;
+
+    snapshotVechi = open(fisierSnapshotVechi, O_RDWR);
+    if (snapshotVechi == -1) {
+        perror("Eroare la deschiderea snapshot-ului vechi");
+        exit(EXIT_FAILURE);
+    }
+
+    snapshotNou = open(fisierSnapshotNou, O_RDONLY);
+    if (snapshotNou == -1) {
+        perror("Eroare la deschiderea snapshot-ului nou");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Conținutul snapshot-ului vechi:\n");
+    while (read(snapshotVechi, linieVechi, sizeof(linieVechi)) > 0) {
+        printf("%s", linieVechi);
+    }
+    printf("\n");
+
+    lseek(snapshotVechi, 0, SEEK_SET); // Repositionează cursorul la începutul fișierului
+
+    printf("Conținutul snapshot-ului nou:\n");
+    while (read(snapshotNou, linieNoua, sizeof(linieNoua)) > 0) {
+        printf("%s", linieNoua);
+    }
+    printf("\n");
+
+    printf("Compararea snapshot-urilor:\n");
+
+    while (read(snapshotVechi, linieVechi, sizeof(linieVechi)) > 0 && read(snapshotNou, linieNoua, sizeof(linieNoua)) > 0) {
+        sscanf(linieVechi, "%s %s %c %ld %[^\n]", metadateVechi.nume, metadateVechi.cale, &metadateVechi.tip, &metadateVechi.dimensiune, linieVechi);
+        sscanf(linieNoua, "%s %s %c %ld %[^\n]", metadateNou.nume, metadateNou.cale, &metadateNou.tip, &metadateNou.dimensiune, linieNoua);
+
+        if (strcmp(metadateVechi.nume, metadateNou.nume) != 0 || strcmp(metadateVechi.cale, metadateNou.cale) != 0 ||
+            metadateVechi.tip != metadateNou.tip || metadateVechi.dimensiune != metadateNou.dimensiune) {
+            printf("Fișier modificat: %s\n", metadateNou.cale);
+            izoleazaFisier(metadateNou.cale, directorCarantina);
+        }
+    }
+
+    close(snapshotNou);
+    close(snapshotVechi);
+}
+
 void creazaSnapshot(char *caleDirector, char *fisierSnapshot, char *directorCarantina) {
     int filePtr;
     struct Metadate metadate;
@@ -102,13 +157,25 @@ void creazaSnapshot(char *caleDirector, char *fisierSnapshot, char *directorCara
         mkdir(fisierSnapshot, 0777);
     }
 
+    char snapshotVechi[512], snapshotNou[512];
+    sprintf(snapshotVechi, "%s/OldSnapshot.txt", fisierSnapshot);
+    sprintf(snapshotNou, "%s/NewSnapshot.txt", fisierSnapshot);
+
+    // Deschide snapshot-ul vechi pentru citire (sau creează-l dacă nu există)
+    int fdOld = open(snapshotVechi, O_RDWR | O_CREAT, 0644);
+    if (fdOld == -1) {
+        perror("Eroare la deschiderea snapshot-ului vechi");
+        exit(EXIT_FAILURE);
+    }
+
+    // Deschide snapshot-ul nou pentru scriere
+    filePtr = open(snapshotNou, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (filePtr == -1) {
+        perror("Eroare la deschiderea snapshot-ului nou");
+        exit(EXIT_FAILURE);
+    }
+
     if ((dir = opendir(caleDirector)) != NULL) {
-        char snapshotVechi[512], snapshotNou[512];
-        sprintf(snapshotVechi, "%s/OldSnapshot.txt", fisierSnapshot);
-        sprintf(snapshotNou, "%s/NewSnapshot.txt", fisierSnapshot);
-
-        filePtr = open(snapshotNou, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-
         while ((entry = readdir(dir)) != NULL) {
             if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
                 char caleFisier[512];
@@ -123,12 +190,38 @@ void creazaSnapshot(char *caleDirector, char *fisierSnapshot, char *directorCara
                 }
             }
         }
-        close(filePtr);
         closedir(dir);
     } else {
         perror("Eroare la deschiderea directorului");
         exit(EXIT_FAILURE);
     }
+
+    close(filePtr); // Închide snapshot-ul nou
+
+    // Compară snapshot-uri doar dacă există un snapshot vechi
+    printf("Compararea snapshot-urilor:\n");
+
+    comparaSnapshoturi(snapshotVechi, snapshotNou, directorCarantina);
+
+    // Deschide snapshot-ul nou pentru citire
+    filePtr = open(snapshotNou, O_RDONLY);
+    if (filePtr == -1) {
+        perror("Eroare la deschiderea snapshot-ului nou");
+        exit(EXIT_FAILURE);
+    }
+
+    // Copiază datele din noul snapshot în vechiul snapshot
+    char buffer[1024];
+    ssize_t bytesRead;
+    while ((bytesRead = read(filePtr, buffer, sizeof(buffer))) > 0) {
+        if (write(fdOld, buffer, bytesRead) != bytesRead) {
+            perror("Eroare la scrierea în snapshot-ul vechi");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    close(fdOld);
+    close(filePtr);
 }
 
 int main(int argc, char *argv[]) {
@@ -137,21 +230,12 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    char snapshotVechi[512], snapshotNou[512];
-    sprintf(snapshotVechi, "%s/OldSnapshot.txt", argv[2]);
+    char snapshotNou[512];
     sprintf(snapshotNou, "%s/NewSnapshot.txt", argv[2]);
-
-    if (access(snapshotVechi, F_OK) != -1) {
-        // Compară snapshot-uri
-        printf("Compararea snapshot-urilor:\n");
-        // comparăSnapshoturi(snapshotVechi, snapshotNou, argv[4], argv);
-    } else {
-        printf("Aceasta este prima rulare, nu există vechiul snapshot pentru a compara.\n");
-    }
 
     // Creează un nou snapshot
     printf("Crearea unui nou snapshot:\n");
-    creazaSnapshot(argv[5], snapshotNou, argv[4]);
+    creazaSnapshot(argv[5], argv[4], argv[2]);
 
     return 0;
 }
